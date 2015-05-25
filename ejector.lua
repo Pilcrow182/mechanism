@@ -111,38 +111,85 @@ minetest.register_craft({
 	}
 })
 
+minetest.register_craft({
+	output = 'mechanism:ejector',
+	recipe = {
+		{'', 'default:diamond', ''},
+		{'default:copper_ingot', 'mechanism:reverse_hopper', 'default:steel_ingot'},
+		{'', 'default:mese_crystal', ''},
+	}
+})
+
 
 -- ABM functions
 
-ejector.push = function(dst, inv, index, name, count, wear)
+ejector.push = function(dst, name, wear)
 	local dstinv, dstlabel, dstlist, is_hopper, dstms, dstmeta, dstitem, dstamount, dstwear = mechanism.check_storage(dst, {"main", "src"})
 	local drop_items = not ( minetest.registered_nodes[minetest.get_node(dst).name].walkable )
 
-	if not ( dstlabel or drop_items or dstms ~= 0 ) then return count end
+	if not ( dstlabel or drop_items or dstms ~= 0 ) then return false end
 
 	if drop_items then
--- 		minetest.chat_send_all("ejector: dropping "..name.." into air at"..minetest.pos_to_string(dst)..", name = "..minetest.get_node(dst).name)
 		minetest.add_item(dst, {name=name, count=1, wear=wear})
-		inv:set_stack("main", index, nil)
-		return count-1
+		return true
 	end
 
 	if dstlabel and dstinv:room_for_item(dstlabel, {name=name, count=1, wear=wear}) then
--- 		minetest.chat_send_all("ejector: injecting "..name.." into inventory at "..minetest.pos_to_string(dst)..", name = "..minetest.get_node(dst).name)
 		dstinv:add_item(dstlabel, {name=name, count=1, wear=wear})
-		inv:set_stack("main", index, {name=name, count=count-1, wear=wear})
-		return count-1
+		return true
 	elseif dstms ~= 0 and ( dstitem == "" or ( dstitem == name and dstwear == wear ) ) and dstamount + 1 <= 9999 then
--- 		minetest.chat_send_all("ejector: injecting "..name.." into metastorage at "..minetest.pos_to_string(dst)..", name = "..minetest.get_node(dst).name)
 		dstmeta:set_string("stored", name)
 		dstmeta:set_string("amount", tostring(dstamount+1))
 		dstmeta:set_string("wear", wear)
 		dstmeta:set_string("infotext", name.." "..dstamount+1)
-		inv:set_stack("main", index, {name=name, count=count-1, wear=wear})
-		return count-1
+		return true
 	else
-		return count
+		return false
 	end
+end
+
+ejector.get_table = function(inv, labels_list)
+	local invlist = {}
+	local invsize = 0
+	local invtable = {}
+	local itemname = ""
+	local itemcount = 0
+	local itemtotal = 0
+
+	for _,label in ipairs(labels_list) do
+		invlist = inv:get_list(label)
+		invsize = inv:get_size(label)
+		for i=1,invsize do
+			itemname = invlist[i]:get_name()
+			itemcount = invlist[i]:get_count()
+			if itemcount > 0 then
+				itemtotal = invtable[itemname] or 0
+				invtable[itemname] = itemtotal + itemcount
+			end
+		end
+	end
+
+	return invtable
+end
+
+ejector.get_slots_by_name = function(inv, name, labels_list)
+	local invlist = {}
+	local invsize = 0
+	local slots = {}
+	local itemname = ""
+
+	for _,label in ipairs(labels_list) do
+		invlist = inv:get_list(label)
+		invsize = inv:get_size(label)
+		for i=1,invsize do
+			itemname = invlist[i]:get_name()
+			if itemname == name then
+				table.insert(slots, i)
+			end
+		end
+	end
+
+	return slots
 end
 
 
@@ -154,55 +201,70 @@ minetest.register_abm({
 	chance = 1,
 	action = function(pos)
 		local inv = minetest.get_meta(pos):get_inventory()
-		local invlist = inv:get_list("main")
 		local invsize = inv:get_size("main")
-		for i=1,invsize do
-			local name, count, wear = invlist[i]:get_name(), invlist[i]:get_count(), invlist[i]:get_wear()
-			if name ~= nil and name ~= "" then
-				local ejectable = false
-				local is_available = {}
-				for c = 1,count do
-					if count <= 0 then break end
-					for facedir = 0, 5 do
-						local dir, color = getdir[facedir][1], getdir[facedir][2]
-						local dst = {x = pos.x + dir.x, y = pos.y + dir.y, z = pos.z + dir.z}
-						local outlist = inv:get_list(color)
-						local outsize = inv:get_size(color)
-						for j=1,outsize do
-							local outname = outlist[j]:get_name()
-							if outname == name then
-								ejectable = true
-								outstack = outlist[j]:get_count()
-								for k=1,outstack do
-									count = ejector.push(dst, inv, i, name, count, wear)
-									if count <= 0 then break end
-								end
-							end
-							if outlist[j]:is_empty() then is_available[color] = true end
-							if count <= 0 then break end
-						end
-						if count <= 0 then break end
-					end
-					if ejectable == false then
-						for facedir = 0, 5 do
-							local dir, color = getdir[facedir][1], getdir[facedir][2]
+		local invtable = ejector.get_table(inv, {"main"})
+		local outtable = ejector.get_table(inv, {"red", "cyan", "green", "magenta", "blue", "yellow"})
+
+		local newout = {}
+		for item,_ in pairs(invtable) do
+			if not outtable[item] then newout[item] = true end
+		end
+
+		if minetest.serialize(newout) ~= "return {}" then
+			for item,_ in pairs(newout) do
+				local invlist = inv:get_list("main")
+				local slots_with_item = ejector.get_slots_by_name(inv, item, {"main"})
+				if #slots_with_item > 0 and not outtable[item] then
+					local count, wear = invlist[slots_with_item[1]]:get_count(), invlist[slots_with_item[1]]:get_wear()
+					for d = 0, 5 do
+						local dir, color = getdir[d][1], getdir[d][2]
+						if inv:room_for_item(color, {name=item, count=1, wear=wear}) then
 							local dst = {x = pos.x + dir.x, y = pos.y + dir.y, z = pos.z + dir.z}
 							local dstinv, dstlabel, dstlist, is_hopper, dstms, dstmeta, dstitem, dstamount = mechanism.check_storage(dst, {"main", "src"})
-							local stack = inv:get_stack("main", i):to_table()
 
 							local ms_avail = false
-							if dstms ~= 0 and ( dstitem == "" or dstitem == stack.name ) then ms_avail = true end
+							if dstms ~= 0 and ( dstitem == "" or dstitem == item ) then ms_avail = true end
 
-							if is_hopper == 0 and is_available[color] and ( dstlabel or ms_avail ) then
-								inv:add_item(color, {name=stack.name, count=1, wear=stack.wear})
-								inv:set_stack("main", i, {name=stack.name, count=stack.count-1})
-								count = count - 1
+							if is_hopper == 0 and ( ms_avail or ( dstlabel and dstinv:room_for_item(dstlabel, {name=item, count=1, wear=wear}) ) ) then
+								inv:add_item(color, {name=item, count=1, wear=wear})
+								inv:set_stack("main", slots_with_item[1], {name=item, count=count-1})
+								invtable = ejector.get_table(inv, {"main"})
+								outtable = ejector.get_table(inv, {"red", "cyan", "green", "magenta", "blue", "yellow"})
 								break
 							end
 						end
 					end
-					if count <= 0 then break end
 				end
+			end
+		end
+
+		for name, count in pairs(outtable) do
+			local end_loop = false
+			while invtable[name] and invtable[name] >= count and not end_loop do
+				local output = {}
+				local slots_with_item = ejector.get_slots_by_name(inv, name, {"main"})
+				for d = 0, 5 do
+					local dir, color = getdir[d][1], getdir[d][2]
+					local dst = {x = pos.x + dir.x, y = pos.y + dir.y, z = pos.z + dir.z}
+					local push = ejector.get_table(inv, {color})[name] or 0
+					for index,slot in pairs(slots_with_item) do
+						local invlist = inv:get_list("main")
+						local count, wear = invlist[slot]:get_count(), invlist[slot]:get_wear()
+						local ejected = false
+						while slot and push > 0 and count > 0 do
+							ejected = ejector.push(dst, name, wear)
+							if ejected then
+								inv:set_stack("main", slot, {name=name, count=count-1, wear=wear})
+								push, count = push - 1, count - 1
+								if count == 0 then slots_with_item[index] = nil end
+							elseif count > 0 then
+								end_loop = true
+								break
+							end
+						end
+					end
+				end
+				invtable = ejector.get_table(inv, {"main"})
 			end
 		end
 	end

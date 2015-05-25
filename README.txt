@@ -1,4 +1,4 @@
-Mechanism mod, by Pilcrow, version 0.4
+Mechanism mod, by Pilcrow, version 0.5
 
 ###############################################################################
 
@@ -31,7 +31,7 @@ Just install it and everything works.
 ===============================================================================
 
 Known bugs:
-none!
+none, but a large part of the ejector was reprogrammed and could use more tests
 
 ===============================================================================
 
